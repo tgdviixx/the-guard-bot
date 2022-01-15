@@ -14,18 +14,19 @@ If you want to use me for your groups, \
 note that I'm more useful on a network of groups and \
 you also need to <b>setup a new bot.</b>
 
-So if you only need to manage a single group, @GroupButler_bot \
-and @mattatabot might be better choices for you.
+So if you don't wish to self-host, @MissRose_bot \
+might be a better choice for you.
 `;
 
-const helpHandler = ({ chat, replyWithHTML }) => {
-	if (chat.type !== 'private') return null;
+/** @param { import('../../typings/context').ExtendedContext } ctx */
+const helpHandler = (ctx) => {
+	if (ctx.chat.type !== 'private') return null;
 
-	return replyWithHTML(
+	return ctx.replyWithHTML(
 		message,
 		Markup.inlineKeyboard([
-			Markup.urlButton('🛠 Setup a New Bot', homepage)
-		]).extra()
+			Markup.button.url('🛠 Setup a New Bot', homepage)
+		])
 	);
 };
 

@@ -1,29 +1,23 @@
+// @ts-check
 'use strict';
+
+process.chdir(__dirname);
+require('ts-node').register({ transpileOnly: true });
 
 // Utils
 const { logError } = require('./utils/log');
 
-/**
- * @type {Telegraf}
- * Bot
- */
 const bot = require('./bot');
-
-bot.telegram.getMe().then((botInfo) => {
-	bot.options.username = botInfo.username;
-	bot.context.botInfo = botInfo;
-});
 
 bot.use(
 	require('./handlers/middlewares'),
-	require('./handlers/messages'),
 	require('./plugins'),
 	require('./handlers/commands'),
 	require('./handlers/regex'),
 	require('./handlers/unmatched'),
 );
 
-
 bot.catch(logError);
 
-bot.startPolling();
+// eslint-disable-next-line @typescript-eslint/no-floating-promises
+bot.launch();

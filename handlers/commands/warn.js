@@ -1,97 +1,62 @@
 'use strict';
 
 // Utils
-const { link, scheduleDeletion } = require('../../utils/tg');
-const { logError } = require('../../utils/log');
-
-// Config
-const {
-	numberOfWarnsToBan,
-	warnInlineKeyboard,
-} = require('../../config');
-const reply_markup = { inline_keyboard: warnInlineKeyboard };
-
-// Bot
-const bot = require('../../bot');
-const { replyOptions } = require('../../bot/options');
+const { parse, strip, substom } = require('../../utils/cmd');
+const { scheduleDeletion } = require('../../utils/tg');
 
 // DB
-const { isAdmin, ban, getWarns, warn } = require('../../stores/user');
+const { getUser } = require('../../stores/user');
 
-const warnHandler = async ({ message, chat, reply, me, state }) => {
-	const { user } = state;
-	const userToWarn = message.reply_to_message
-		? Object.assign({ username: '' }, message.reply_to_message.from)
-		: message.commandMention
-			? Object.assign({ username: '' }, message.commandMention)
-			: null;
-
-	if (!state.isAdmin) return null;
-
-	if (message.chat.type === 'private') {
-		return reply(
+/** @param { import('../../typings/context').ExtendedContext } ctx */
+const warnHandler = async (ctx) => {
+	if (!ctx.message.chat.type.endsWith('group')) {
+		return ctx.replyWithHTML(
 			'ℹ️ <b>This command is only available in groups.</b>',
-			replyOptions
 		);
 	}
 
+	if (ctx.from.status !== 'admin') return null;
 
-	if (!userToWarn) {
-		return reply(
-			'ℹ️ <b>Reply to a message or mention a user.</b>',
-			replyOptions
-		).then(scheduleDeletion);
+	const { flags, reason, targets } = parse(ctx.message);
+
+	if (targets.length !== 1) {
+		return ctx.replyWithHTML(
+			'ℹ️ <b>Specify one user to warn.</b>',
+		).then(scheduleDeletion());
 	}
 
-	if (userToWarn.username.toLowerCase() === me.toLowerCase()) return null;
+	const userToWarn = await getUser(strip(targets[0]));
 
-	const reason = message.text.split(' ').slice(1).join(' ').trim();
+	if (!userToWarn) {
+		return ctx.replyWithHTML(
+			'❓ <b>User unknown.</b>\n' +
+			'Please forward their message, then try again.',
+		).then(scheduleDeletion());
+	}
 
-	if (await isAdmin(userToWarn)) {
-		return reply('ℹ️ <b>Can\'t warn other admins.</b>', replyOptions);
+	if (userToWarn.id === ctx.botInfo.id) return null;
+
+	if (userToWarn.status === 'admin') {
+		return ctx.replyWithHTML('ℹ️ <b>Can\'t warn other admins.</b>');
 	}
 
 	if (reason.length === 0) {
-		return reply('ℹ️ <b>Need a reason to warn.</b>', replyOptions)
-			.then(scheduleDeletion);
+		return ctx.replyWithHTML('ℹ️ <b>Need a reason to warn.</b>')
+			.then(scheduleDeletion());
 	}
 
-	await warn(userToWarn, reason);
-	const warnCount = await getWarns(userToWarn);
-	const promises = [];
-
-	if (message.reply_to_message) {
-		promises.push(bot.telegram.deleteMessage(
-			chat.id,
-			message.reply_to_message.message_id
-		));
+	if (ctx.message.reply_to_message) {
+		ctx.deleteMessage(ctx.message.reply_to_message.message_id)
+			.catch(() => null);
 	}
 
-	try {
-		await reply(
-			`⚠️ ${link(user)} <b>warned</b> ${link(userToWarn)} <b>for:</b>` +
-			`\n\n${reason} (${warnCount.length}/${numberOfWarnsToBan})`,
-			{ parse_mode: 'HTML', reply_markup }
-		);
-	} catch (e) {
-		// we don't expect an error
-		// but we do wish to continue if one happens
-		// to ban people who reach max number of warnings
-		logError(e);
-	}
-
-	if (warnCount.length >= numberOfWarnsToBan) {
-		promises.push(bot.telegram.kickChatMember(chat.id, userToWarn.id));
-		promises.push(ban(userToWarn, 'Reached max number of warnings'));
-		promises.push(reply(
-			`🚫 ${link(user)} <b>banned</b> ${link(userToWarn)} ` +
-			'<b>for:</b>\n\nReached max number of warnings ' +
-			`(${warnCount.length}/${numberOfWarnsToBan})`,
-			replyOptions
-		));
-	}
-
-	return Promise.all(promises).catch(logError);
+	return ctx.warn({
+		admin: ctx.from,
+		amend: flags.has('amend'),
+		reason: await substom(reason),
+		userToWarn,
+		mode: 'manual',
+	});
 };
 
 module.exports = warnHandler;

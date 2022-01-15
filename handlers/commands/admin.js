@@ -1,57 +1,53 @@
 'use strict';
 
 // Utils
-const { link } = require('../../utils/tg');
-const { logError } = require('../../utils/log');
-
-// Bot
-const { replyOptions } = require('../../bot/options');
+const { html } = require('../../utils/html');
+const { isMaster } = require('../../utils/config');
+const { link, scheduleDeletion } = require('../../utils/tg');
+const { parse, strip } = require('../../utils/cmd');
 
 // DB
 const {
-	isAdmin,
 	admin,
-	isBanned,
-	getWarns,
-	nowarns
+	getUser,
 } = require('../../stores/user');
 
-const adminHandler = async ({ message, reply, state }) => {
-	const { isMaster, user } = state;
-	if (!isMaster) return null;
+/** @param { import('../../typings/context').ExtendedContext } ctx */
+const adminHandler = async (ctx) => {
+	if (!isMaster(ctx.from)) return null;
 
-	const userToAdmin = message.reply_to_message
-		? message.reply_to_message.from
-		: message.commandMention
-			? message.commandMention
-			: user;
+	const { targets } = parse(ctx.message);
 
-	if (await isBanned(userToAdmin)) {
-		return reply('ℹ️ <b>Can\'t admin banned user.</b>', replyOptions);
+	if (targets.length > 1) {
+		return ctx.replyWithHTML(
+			'ℹ️ <b>Specify one user to promote.</b>',
+		).then(scheduleDeletion());
 	}
 
-	if (await isAdmin(userToAdmin)) {
-		return reply(
-			`⭐️ ${link(userToAdmin)} <b>is already admin.</b>`,
-			replyOptions
+	const userToAdmin = targets.length
+		? await getUser(strip(targets[0]))
+		: ctx.from;
+
+	if (!userToAdmin) {
+		return ctx.replyWithHTML(
+			'❓ <b>User unknown.</b>\n' +
+			'Please forward their message, then try again.',
+		).then(scheduleDeletion());
+	}
+
+	if (userToAdmin.status === 'banned') {
+		return ctx.replyWithHTML('ℹ️ <b>Can\'t admin banned user.</b>');
+	}
+
+	if (userToAdmin.status === 'admin') {
+		return ctx.replyWithHTML(
+			html`⭐️ ${link(userToAdmin)} <b>is already admin.</b>`,
 		);
 	}
 
-	if (await getWarns(userToAdmin)) {
-		try {
-			await nowarns(userToAdmin);
-		} catch (err) {
-			logError(err);
-		}
-	}
+	await admin(userToAdmin);
 
-	try {
-		await admin(userToAdmin);
-	} catch (err) {
-		logError(err);
-	}
-
-	return reply(`⭐️ ${link(userToAdmin)} <b>is now admin.</b>`, replyOptions);
+	return ctx.replyWithHTML(html`⭐️ ${link(userToAdmin)} <b>is now admin.</b>`);
 };
 
 module.exports = adminHandler;

@@ -5,41 +5,71 @@ const { addCommand, getCommand } = require('../../stores/command');
 
 // Bot
 const { Markup } = require('telegraf');
-const { replyOptions } = require('../../bot/options');
 
-const preserved = [ 'admin', 'unadmin', 'leave', 'warn', 'unwarn', 'nowarns',
-	'getwarns', 'ban', 'unban', 'report', 'staff', 'link', 'groups', 'commands',
-	'addcommand', 'removecommand' ];
+const Cmd = require('../../utils/cmd');
+const { isMaster } = require('../../utils/config');
+const { inlineKeyboard } = require('../../utils/tg');
 
-const addCommandHandler = async (ctx, next) => {
+const preserved = require('../commands').handlers;
+
+const roleBtn = (btRole, { newCommand, currentRole }) => {
+	const noop = btRole.toLowerCase() === currentRole.toLowerCase();
+	return {
+		text: '✅ '.repeat(noop) + btRole,
+		callback_data: Cmd.stringify({
+			command: 'addcommand',
+			flags: {
+				noop,
+				role: btRole,
+				replace: 'soft',
+			},
+			reason: newCommand,
+		}),
+	};
+};
+
+const roleKbRow = (cmdData) => [
+	roleBtn('Admins', cmdData),
+	roleBtn('Everyone', cmdData),
+];
+
+const normalizeRole = (role = '') => {
+	const lower = role.toLowerCase();
+	return lower === 'master' || lower === 'admins'
+		? lower
+		: 'everyone';
+};
+
+/** @param { import('../../typings/context').ExtendedContext } ctx */
+const addCommandHandler = async (ctx) => {
 	const { chat, message, reply } = ctx;
+	if (chat.type === 'channel') return null;
 	const { id } = ctx.from;
-	if (chat.type !== 'private') return null;
 
 	if (ctx.from.status !== 'admin') {
-		return reply(
+		return ctx.replyWithHTML(
 			'ℹ️ <b>Sorry, only admins access this command.</b>',
-			replyOptions
 		);
 	}
 
-	const [ slashCommand, commandName ] = message.text.split(' ');
-	const isValidName = commandName && commandName.match(/^(?:[!])?(\w+)$/);
+	const { flags, reason: commandName } = Cmd.parse(message);
+	if (flags.has('noop')) return null;
+
+	const isValidName = /^!?(\w+)$/.exec(commandName);
 	if (!isValidName) {
-		return reply(
+		return ctx.replyWithHTML(
 			'<b>Send a valid command.</b>\n\nExample:\n' +
 			'<code>/addcommand rules</code>',
-			replyOptions
 		);
 	}
 	const newCommand = isValidName[1].toLowerCase();
-	if (preserved.includes(newCommand)) {
-		reply('❗️ Sorry you can\'t use this name, it\'s preserved.\n\n' +
+	if (preserved.has(newCommand)) {
+		return reply('❗️ Sorry you can\'t use this name, it\'s preserved.\n\n' +
 			'Try another one.');
-		return next();
 	}
 
-	const replaceCmd = slashCommand.toLowerCase() === '/replacecommand';
+	const replaceCmd = flags.has('replace');
+	const content = message.reply_to_message;
 
 	const cmdExists = await getCommand({ isActive: true, name: newCommand });
 
@@ -50,19 +80,39 @@ const addCommandHandler = async (ctx, next) => {
 			'/addcommand <code>&lt;name&gt;</code> - to add a command.\n' +
 			'/removecommand <code>&lt;name&gt;</code>' +
 			' - to remove a command.',
-			Markup.keyboard([ [ `/replaceCommand ${newCommand}` ] ])
+			Markup.keyboard([ [ `/addcommand -replace ${newCommand}` ] ])
+				.selective()
 				.oneTime()
-				.resize()
-				.extra()
+				.resize(),
 		);
 	}
-	await addCommand({ id, name: newCommand, state: 'role' });
-	return reply('Who can use this command?', Markup.keyboard([
-		[ 'Master', 'Admins', 'Everyone' ]
-	])
-		.oneTime()
-		.resize()
-		.extra());
+	if (cmdExists && cmdExists.role === 'master' && !isMaster(ctx.from)) {
+		return ctx.replyWithHTML(
+			'ℹ️ <b>Sorry, only master can replace this command.</b>',
+		);
+	}
+
+	const softReplace = flags.get('replace') === 'soft';
+	if (content || softReplace) {
+		const role = normalizeRole(flags.get('role'));
+		await addCommand({
+			id,
+			role,
+			type: 'copy',
+			caption: null,
+			isActive: true,
+			name: newCommand,
+			...softReplace || { content },
+		});
+		return ctx.replyWithHTML(
+			`✅ <b>Successfully added <code>!${isValidName[1]}</code></b>.\n` +
+			'Who should be able to use it?',
+			inlineKeyboard(roleKbRow({ currentRole: role, newCommand })),
+		);
+	}
+
+	// eslint-disable-next-line max-len
+	return ctx.replyWithHTML('ℹ️ <b>Reply to a message you\'d like to save</b>');
 };
 
 module.exports = addCommandHandler;

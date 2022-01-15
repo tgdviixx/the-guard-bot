@@ -1,26 +1,16 @@
 'use strict';
 
-const dedent = require('dedent-js');
+const noop = Function.prototype;
 
-// Utils
-const { link } = require('../../utils/tg');
-
-const { replyOptions } = require('../../bot/options');
-
-const kickBannedHandler = async (ctx, next) => {
-	if (ctx.chat.type === 'private') {
+/** @param { import('../../typings/context').ExtendedContext } ctx */
+const kickBannedHandler = (ctx, next) => {
+	if (!ctx.chat.type.endsWith('group')) {
 		return next();
 	}
 	if (ctx.from.status === 'banned') {
-		ctx.deleteMessage();
-		await ctx.kickChatMember(ctx.from.id);
-		return ctx.replyWithHTML(
-			dedent(`
-			🚫 ${link(ctx.from)} <b>is banned</b>!
-
-			Reason: ${ctx.from.ban_reason}`),
-			replyOptions
-		);
+		ctx.deleteMessage().catch(noop);
+		return ctx.kickChatMember(ctx.from.id)
+			.catch(err => ctx.reply(`⚠️ kickBanned: ${err}`));
 	}
 	return next();
 };

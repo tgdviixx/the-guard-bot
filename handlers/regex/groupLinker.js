@@ -1,12 +1,20 @@
 'use strict';
 
-const { hears } = require('telegraf');
+const { Telegraf: { hears } } = require('telegraf');
 const XRegExp = require('xregexp');
 
 const { managesGroup } = require.main.require('./stores/group');
 
-const regex = /^(?:Link to\s+)?(.+) group(?: link)?\s*\?*$/i;
+const { replyId } = require('../../utils/tg');
 
+const regex = XRegExp.tag('ix')`^
+	(?<groupName>.+?)
+	\s(?:chat|gro?u?p)(?:\slink)?
+	(?:,?\sple?a?[sz]e?)?
+	\s*\?*
+$`;
+
+/** @param { import('../../typings/context').ExtendedContext } ctx */
 const handler = async (ctx, next) => {
 	let [ , groupName ] = ctx.match;
 	if (groupName.toLowerCase() === 'this') {
@@ -14,14 +22,19 @@ const handler = async (ctx, next) => {
 		groupName = ctx.chat.title;
 	}
 
-	const $regex = XRegExp.tag('i')`${groupName}`;
+	const $regex = XRegExp.tag('nix')`(^|/\s?)
+		(the\s)?${groupName}(\sgroup|\schat)?
+	($|\s?/)`;
 
 	const group = await managesGroup({ title: { $regex } });
 	const { link } = group || {};
 
 	if (!link) return next();
 
-	return ctx.reply(link, { reply_to_message_id: ctx.message.message_id });
+	return ctx.reply(link, {
+		disable_web_page_preview: false,
+		reply_to_message_id: replyId(ctx.message),
+	});
 };
 
 module.exports = hears(regex, handler);

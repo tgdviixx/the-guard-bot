@@ -1,15 +1,21 @@
 'use strict';
 
-// Config
-const { master } = require('../../config');
+const { isMaster } = require('../../utils/config');
 
 // DB
 const { updateUser } = require('../../stores/user');
 
+/** @param { import('telegraf').ContextMessageUpdate } ctx */
 const updateUserDataHandler = async (ctx, next) => {
-	if (ctx.message.forward_from) {
-		updateUser(ctx.message.forward_from);
+	if (ctx.message && ctx.message.forward_from) {
+		updateUser(ctx.message.forward_from).catch(() => null);
 	}
+
+	const { entities = [] } = ctx.message || {};
+
+	await Promise.all(entities.map(({ user }) => user && updateUser(user)));
+
+	if (!ctx.from) return next();
 
 	const user = await updateUser(ctx.from);
 
@@ -17,11 +23,7 @@ const updateUserDataHandler = async (ctx, next) => {
 
 	ctx.state = {
 		isAdmin: user && user.status === 'admin',
-		isMaster: user &&
-		(user.id === Number(master) ||
-			user.username &&
-			user.username.toLowerCase() ===
-			String(master).replace('@', '').toLowerCase()),
+		isMaster: isMaster(ctx.from),
 		user,
 	};
 

@@ -1,74 +1,105 @@
+// @ts-check
 'use strict';
 
+const { last } = require('ramda');
+const XRegExp = require('xregexp');
+
 // Utils
+const { html, lrm } = require('../../utils/html');
 const { link, scheduleDeletion } = require('../../utils/tg');
+const { isWarnNotExpired } = require('../../utils/config');
+const { parse, strip } = require('../../utils/cmd');
+const { pMap } = require('../../utils/promise');
 
 // Config
-const { numberOfWarnsToBan } = require('../../config');
-
-// Bot
-const { replyOptions } = require('../../bot/options');
+const { numberOfWarnsToBan } = require('../../utils/config').config;
 
 // DB
 const { listGroups } = require('../../stores/group');
 const { getUser, unwarn } = require('../../stores/user');
 
-const noop = Function.prototype;
+const dateRegex = XRegExp.tag('nix')`^
+	\d{4}       # year
+	-\d{2}      # month
+	(-\d{2}     # day
+	([T\s]\d{2} # hour
+	(:\d{2}     # min
+	(:\d{2}     # sec
+	(.\d{3}Z?   # ms
+	)?)?)?)?)?
+$`;
 
-const unwarnHandler = async ({ message, reply, state, telegram }) => {
-	const { isAdmin, user } = state;
-	if (!isAdmin) return null;
+/** @param { import('../../typings/context').ExtendedContext } ctx */
+const unwarnHandler = async (ctx) => {
+	if (ctx.from?.status !== 'admin') return null;
 
-	const userToUnwarn = message.reply_to_message
-		? message.reply_to_message.from
-		: message.commandMention
-			? message.commandMention
-			: null;
+	const { reason, targets } = parse(ctx.message);
 
-	if (!userToUnwarn) {
-		return reply(
-			'ℹ️ <b>Reply to a message or mention a user.</b>',
-			replyOptions
-		).then(scheduleDeletion);
+	if (targets.length !== 1) {
+		return ctx.replyWithHTML(
+			'ℹ️ <b>Specify one user to unwarn.</b>',
+		).then(scheduleDeletion());
 	}
 
-	const dbUser = await getUser({ id: userToUnwarn.id });
+	const userToUnwarn = await getUser(strip(targets[0]));
 
-	const allWarns = dbUser.warns;
+	if (!userToUnwarn) {
+		return ctx.replyWithHTML(
+			'❓ <b>User unknown</b>',
+		).then(scheduleDeletion());
+	}
+
+	const allWarns = userToUnwarn.warns.filter(isWarnNotExpired(new Date()));
 
 	if (allWarns.length === 0) {
-		return reply(
-			`ℹ️ ${link(userToUnwarn)} <b>already has no warnings.</b>`,
-			replyOptions
+		return ctx.replyWithHTML(
+			html`ℹ️ ${link(userToUnwarn)} <b>already has no warnings.</b>`,
 		);
 	}
 
-	if (dbUser.status === 'banned') {
-		const groups = await listGroups();
-
-		groups.forEach(group =>
-			telegram.unbanChatMember(group.id, userToUnwarn.id));
+	if (userToUnwarn.status === 'banned') {
+		await pMap(await listGroups({ type: 'supergroup' }), group =>
+			ctx.tg.unbanChatMember(group.id, userToUnwarn.id));
 	}
 
-	await unwarn(userToUnwarn);
+	let lastWarn;
+	if (!reason) {
+		lastWarn = last(allWarns);
+	} else if (dateRegex.test(reason)) {
+		const normalized = reason.replace(' ', 'T').toUpperCase();
+		lastWarn = allWarns.find(({ date }) =>
+			date && date.toISOString().startsWith(normalized));
+	} else {
+		return ctx.replyWithHTML(
+			'⚠ <b>Invalid date</b>',
+		).then(scheduleDeletion());
+	}
 
-	if (dbUser.status === 'banned') {
-		telegram.sendMessage(
+	if (!lastWarn) {
+		return ctx.replyWithHTML(
+			'❓ <b>404: Warn not found</b>',
+		).then(scheduleDeletion());
+	}
+
+	await unwarn(userToUnwarn, lastWarn);
+
+	if (userToUnwarn.status === 'banned') {
+		ctx.tg.sendMessage(
 			userToUnwarn.id,
-			'♻️ You were unbanned from all of the /groups!'
-		).catch(noop);
+			'♻️ You were unbanned from all of the /groups!',
+		).catch(() => null);
 		// it's likely that the banned person haven't PMed the bot,
 		// which will cause the sendMessage to fail,
 		// hance .catch(noop)
 		// (it's an expected, non-critical failure)
 	}
 
-	return reply(
-		`❎ ${link(user)} <b>pardoned</b> ${link(userToUnwarn)} ` +
-		`<b>for:</b>\n\n${allWarns[allWarns.length - 1]}` +
-		` (${allWarns.length - 1}/${numberOfWarnsToBan})`,
-		replyOptions
-	);
+	const count = html`<b>${allWarns.length}</b>/${numberOfWarnsToBan}`;
+
+	return ctx.loggedReply(html`
+		❎ ${lrm}${ctx.from.first_name} <b>pardoned</b> ${link(userToUnwarn)} for
+		${count}: ${lrm}${lastWarn.reason || lastWarn}
+	`);
 };
 
 

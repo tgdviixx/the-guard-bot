@@ -1,53 +1,121 @@
+// @ts-check
 'use strict';
 
 // Utils
-const { scheduleDeletion } = require('../../utils/tg');
-
-// Bot
-const { replyOptions } = require('../../bot/options');
+const { inspect } = require('util');
+const { displayUser, scheduleDeletion } = require('../../utils/tg');
+const { html, lrm, TgHtml } = require('../../utils/html');
+const { isMaster, isWarnNotExpired } = require('../../utils/config');
+const { parse, strip } = require('../../utils/cmd');
 
 // DB
-const { getUser } = require('../../stores/user');
+const { getUser, permit } = require('../../stores/user');
 
-const getWarnsHandler = async ({ message, reply, state }) => {
-	const { isAdmin } = state;
+/** @param {Date} date */
+const formatDate = date =>
+	date && date.toISOString().slice(0, -5).replace('T', ' ') + ' UTC';
 
-	const mentionedUser = message.reply_to_message
-		? message.reply_to_message.from
-		: message.commandMention
-			? message.commandMention
-			: state.user;
+/**
+ * @param {string} defaultVal
+ */
+const formatEntry = async (entry, defaultVal) => {
+	if (!entry || !entry.by_id) return html`${defaultVal}`;
+	const { first_name } = await getUser({ id: entry.by_id }) || {};
+	if (!first_name) return html`${lrm}${entry.reason} (${formatDate(entry.date)})`;
+	return html`${lrm}${entry.reason} (${first_name}, ${formatDate(entry.date)})`;
+};
 
-	if (!isAdmin && mentionedUser.id !== state.user.id) return null;
+const formatWarn = async (warn, i) =>
+	isWarnNotExpired(new Date())(warn)
+		? html`${i + 1}. ${await formatEntry(warn, warn)}`
+		: html`<del>${i + 1}. ${await formatEntry(warn, warn)}</del>`;
 
-	const theUser = await getUser({ id: mentionedUser.id });
-	const { first_name, id, last_name, status, username, warns } = theUser;
+/**
+ * @param {string | TgHtml | undefined } content
+ */
+const isNotEmpty = content => content?.length;
 
-	const userName = `<b>Name:</b> <code>${first_name} ${last_name}</code>\n`;
-	const userId = `<b>ID:</b> <code>${id}</code>\n`;
-	const userStatus = `<b>Status:</b> <code>${status}</code>\n`;
-	const userUsername = username
-		? `<b>Username:</b> @${username}\n`
+const optional = (header, sep, content) =>
+	isNotEmpty(content)
+		? html`${header}${sep}${content}`
+		: html``;
+
+const title = user => {
+	if (isMaster(user)) {
+		return html`🕴️ <b>Bot master</b>`;
+	} else if (user.status === 'admin') {
+		return html`⭐️ <b>Admin</b>`;
+	}
+	return html`👤 <b>User</b>`;
+};
+
+/** @param { import('../../typings/context').ExtendedContext } ctx */
+const getWarnsHandler = async (ctx) => {
+	if (!ctx.from) {
+		return ctx.replyWithHTML(
+			'ℹ️ <b>This command is not available in channels.</b>',
+		).then(scheduleDeletion());
+	}
+
+	const { flags, targets } = parse(ctx.message);
+
+	if (targets.length > 1) {
+		return ctx.replyWithHTML(
+			'ℹ️ <b>Specify one user.</b>',
+		).then(scheduleDeletion());
+	}
+
+	const theUser = targets.length && ctx.from.status === 'admin'
+		? await getUser(strip(targets[0]))
+		: ctx.from;
+
+	if (!theUser) {
+		return ctx.replyWithHTML(
+			'❓ <b>User unknown.</b>',
+		).then(scheduleDeletion());
+	}
+
+	if (flags.has('raw') && ctx.from.status === 'admin') {
+		return ctx.replyWithHTML(
+			TgHtml.pre(inspect(theUser)),
+		).then(scheduleDeletion());
+	}
+
+	const header = html`${title(theUser)} ${displayUser(theUser)}`;
+	const banReason = optional(
+		html`🚫 <b>Ban reason:</b>`,
+		' ',
+		await formatEntry(theUser.ban_details, theUser.ban_reason || ''),
+	);
+	const { warns = [] } = theUser;
+	const userWarns = optional(
+		html`<b>⚠️ Warns:</b>`,
+		'\n',
+		TgHtml.join('\n', await Promise.all(warns.map(formatWarn))),
+	);
+
+	const firstSeen = optional(
+		html`👀 <b>First seen:</b>`,
+		' ',
+		formatDate(theUser.createdAt),
+	);
+
+	const permitS = permit.isValid(theUser.permit)
+		// eslint-disable-next-line max-len
+		? `🎟 ${(await getUser({ id: theUser.permit.by_id })).first_name}, ${formatDate(theUser.permit.date)}`
 		: '';
-	const banReason = theUser.ban_reason
-		? `\n🚫 <b>Ban reason:</b>\n<code>${theUser.ban_reason}</code>`
-		: '';
-	const userWarns = warns.length
-		? '\n<b>⚠️ Warns:</b>\n' + warns
-			.map((warn, i) => `${i + 1}. ${warn}`)
-			.join('\n') + '\n'
-		: '';
 
-	return reply(
-		userName +
-		userStatus +
-		userId +
-		userUsername +
-		userWarns +
+	const oneliners = TgHtml.join('\n', [
+		header,
+		firstSeen,
+		permitS,
+	].filter(isNotEmpty));
+
+	return ctx.replyWithHTML(TgHtml.join('\n\n', [
+		oneliners,
+		userWarns,
 		banReason,
-		replyOptions
-	).then(scheduleDeletion);
+	].filter(isNotEmpty))).then(scheduleDeletion());
 };
 
 module.exports = getWarnsHandler;
-

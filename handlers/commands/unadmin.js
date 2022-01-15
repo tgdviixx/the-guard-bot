@@ -1,48 +1,65 @@
 'use strict';
 
 // Utils
+const { html } = require('../../utils/html');
+const { isMaster } = require('../../utils/config');
 const { link, scheduleDeletion } = require('../../utils/tg');
-const { logError } = require('../../utils/log');
+const { parse, strip } = require('../../utils/cmd');
 
 // Bot
-const { replyOptions } = require('../../bot/options');
+const { telegram } = require('../../bot');
 
 // DB
-const { isAdmin, unadmin } = require('../../stores/user');
+const { getUser, unadmin } = require('../../stores/user');
+const { listGroups } = require('../../stores/group');
 
-const unAdminHandler = async ({ message, reply, state }) => {
-	const { isMaster } = state;
-	if (!isMaster) return null;
+const noop = Function.prototype;
 
-	const userToUnadmin = message.reply_to_message
-		? message.reply_to_message.from
-		: message.commandMention
-			? message.commandMention
-			: null;
+const tgUnadmin = async (userToUnadmin) => {
+	for (const group of await listGroups()) {
+		telegram.promoteChatMember(group.id, userToUnadmin.id, {
+			can_change_info: false,
+			can_delete_messages: false,
+			can_invite_users: false,
+			can_pin_messages: false,
+			can_promote_members: false,
+			can_restrict_members: false,
+		}).catch(noop);
+	}
+};
 
-	if (!userToUnadmin) {
-		return reply(
-			'ℹ️ <b>Reply to a message or mention a user.</b>',
-			replyOptions
-		).then(scheduleDeletion);
+/** @param { import('../../typings/context').ExtendedContext } ctx */
+const unAdminHandler = async (ctx) => {
+	if (!isMaster(ctx.from)) return null;
+
+	const { targets } = parse(ctx.message);
+
+	if (targets.length !== 1) {
+		return ctx.replyWithHTML(
+			'ℹ️ <b>Specify one user to unadmin.</b>',
+		).then(scheduleDeletion());
 	}
 
-	if (!await isAdmin(userToUnadmin)) {
-		return reply(
-			`ℹ️ ${link(userToUnadmin)} <b>is not admin.</b>`,
-			replyOptions
+	const userToUnadmin = await getUser(strip(targets[0]));
+
+	if (!userToUnadmin) {
+		return ctx.replyWithHTML(
+			'❓ <b>User unknown.</b>',
+		).then(scheduleDeletion());
+	}
+
+	if (userToUnadmin.status !== 'admin') {
+		return ctx.replyWithHTML(
+			html`ℹ️ ${link(userToUnadmin)} <b>is not admin.</b>`,
 		);
 	}
 
-	try {
-		await unadmin(userToUnadmin);
-	} catch (err) {
-		logError(err);
-	}
+	await tgUnadmin(userToUnadmin);
 
-	return reply(
-		`❗️ ${link(userToUnadmin)} <b>is no longer admin.</b>`,
-		replyOptions
+	await unadmin(userToUnadmin);
+
+	return ctx.replyWithHTML(
+		html`❗️ ${link(userToUnadmin)} <b>is no longer admin.</b>`,
 	);
 };
 
