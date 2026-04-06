@@ -33,12 +33,12 @@ User.update(
 	{ $unset: { username: true } },
 	{ multi: true },
 ).then(() =>
-	User.ensureIndex({ fieldName: 'username', sparse: true, unique: true }));
+	User.ensureIndex({ fieldName: 'username', sparse: true }));
 
 const normalizeTgUser = R.pipe(
 	R.pick([ 'first_name', 'id', 'last_name', 'username' ]),
 	R.evolve({ username: R.toLower }),
-	R.merge({ first_name: '', last_name: '' }),
+	R.mergeRight({ first_name: '', last_name: '' }),
 );
 
 const getUpdatedDocument = R.prop(1);
